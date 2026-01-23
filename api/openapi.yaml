@@ -1,0 +1,308 @@
+openapi: 3.1.0
+info:
+  title: ChittyChronicle API
+  description: Event logging and audit trail system for ChittyOS ecosystem
+  version: 1.0.0
+servers:
+  - url: https://chronicle.chitty.cc
+paths:
+  /events:
+    get:
+      operationId: searchEvents
+      summary: Search logged events
+      description: Retrieve events with optional filters
+      parameters:
+        - name: service
+          in: query
+          description: Filter by service name
+          schema:
+            type: string
+            enum: [ChittyChain, ChittyCases, ChittyVerify, ChittyQuality, ChittyChat, Callidus]
+        - name: action
+          in: query
+          description: Filter by action type
+          schema:
+            type: string
+        - name: userId
+          in: query
+          description: Filter by user ID
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [success, failed, pending]
+        - name: query
+          in: query
+          description: Full-text search query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Max results (default 100)
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+    post:
+      operationId: logEvent
+      summary: Log new event
+      description: Record an event in ChittyChronicle
+      x-openai-isConsequential: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventInput'
+      responses:
+        '200':
+          description: Event logged successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /timeline:
+    get:
+      operationId: getTimeline
+      summary: Get activity timeline
+      description: Retrieve event counts grouped by time period
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: services
+          in: query
+          description: Comma-separated service names
+          schema:
+            type: string
+        - name: groupBy
+          in: query
+          description: Time grouping
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+            default: day
+      responses:
+        '200':
+          description: Timeline data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TimelineEntry'
+
+  /audit/{entityId}:
+    get:
+      operationId: getAuditTrail
+      summary: Get audit trail
+      description: Retrieve complete audit trail for entity
+      parameters:
+        - name: entityId
+          in: path
+          required: true
+          description: Entity ID (document, case, contract)
+          schema:
+            type: string
+        - name: entityType
+          in: query
+          required: true
+          description: Entity type
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audit trail
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+
+  /statistics:
+    get:
+      operationId: getStatistics
+      summary: Get statistics
+      description: Retrieve event statistics summary
+      parameters:
+        - name: startDate
+          in: query
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Statistics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Statistics'
+
+  /health:
+    get:
+      operationId: getServiceHealth
+      summary: Get service health
+      description: Retrieve health status for all services
+      responses:
+        '200':
+          description: Service health data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceHealth'
+
+components:
+  schemas:
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        service:
+          type: string
+        action:
+          type: string
+        user_id:
+          type: string
+        user_email:
+          type: string
+        metadata:
+          type: object
+        status:
+          type: string
+          enum: [success, failed, pending]
+        integrations:
+          type: array
+          items:
+            type: string
+
+    EventInput:
+      type: object
+      required:
+        - service
+        - action
+      properties:
+        service:
+          type: string
+          description: Service name
+        action:
+          type: string
+          description: Action performed
+        userId:
+          type: string
+        userEmail:
+          type: string
+        metadata:
+          type: object
+          description: Additional context
+        integrations:
+          type: array
+          items:
+            type: string
+          description: Services triggered
+        status:
+          type: string
+          enum: [success, failed, pending]
+          default: success
+        errorMessage:
+          type: string
+
+    TimelineEntry:
+      type: object
+      properties:
+        period:
+          type: string
+          format: date-time
+        service:
+          type: string
+        event_count:
+          type: integer
+        success_count:
+          type: integer
+        failed_count:
+          type: integer
+
+    Statistics:
+      type: object
+      properties:
+        total_events:
+          type: integer
+        service_count:
+          type: integer
+        user_count:
+          type: integer
+        success_count:
+          type: integer
+        failed_count:
+          type: integer
+
+    ServiceHealth:
+      type: object
+      properties:
+        service:
+          type: string
+        total_events:
+          type: integer
+        failed_count:
+          type: integer
+        error_rate:
+          type: number
+        last_event:
+          type: string
+          format: date-time

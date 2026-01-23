@@ -1,0 +1,19 @@
+{
+  "name": "chitty-chronicle-api",
+  "version": "1.0.0",
+  "description": "ChittyChronicle REST API for ChatGPT GPT Actions",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev src/index.ts",
+    "deploy": "wrangler deploy src/index.ts",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241212.0",
+    "wrangler": "^3.93.0"
+  }
+}

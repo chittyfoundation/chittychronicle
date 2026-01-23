@@ -1,0 +1,452 @@
+openapi: 3.1.0
+info:
+  title: ChittyChronicle API
+  description: |
+    Event logging and audit trail system for ChittyOS legal technology ecosystem.
+
+    **Event Categories:**
+    - **Legal Events**: Court proceedings, filings, discovery, depositions
+    - **Evidence Events**: Chain of custody tracking, evidence handling
+    - **System Events**: Service interactions, API calls, security audits
+    - **Case Events**: Case lifecycle, party actions, document management
+  version: 1.0.0
+  contact:
+    name: ChittyOS Support
+    url: https://chitty.cc
+    email: support@chitty.cc
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://chronicle.chitty.cc
+
+paths:
+  /events:
+    get:
+      operationId: searchEvents
+      summary: Search logged events
+      description: Retrieve events with optional filters across legal, evidence, and system event types
+      parameters:
+        - name: service
+          in: query
+          description: Filter by service name
+          schema:
+            type: string
+            enum: [ChittyChain, ChittyCases, ChittyVerify, ChittyQuality, ChittyChat, ChittyLedger, ChittyID, ChittyCert, ChittyTrust, ChittyDNA]
+        - name: action
+          in: query
+          description: Filter by event action type
+          schema:
+            type: string
+            enum:
+              # Legal Events
+              - HEARING
+              - FILING
+              - DISCOVERY
+              - MOTION
+              - DEPOSITION
+              - TRIAL
+              - SETTLEMENT
+              - VIOLATION
+              - CONTRACT_EXECUTION
+              # Evidence Chain of Custody
+              - EVIDENCE_COLLECTED
+              - EVIDENCE_RECEIVED
+              - EVIDENCE_TRANSFERRED
+              - EVIDENCE_ANALYZED
+              - EVIDENCE_STORED
+              - EVIDENCE_SEALED
+              - EVIDENCE_UNSEALED
+              - EVIDENCE_PHOTOGRAPHED
+              - EVIDENCE_DESTROYED
+              # Case Events
+              - CASE_CREATED
+              - CASE_UPDATED
+              - CASE_CLOSED
+              - DOCUMENT_UPLOADED
+              - DOCUMENT_VERIFIED
+              - PARTY_ADDED
+              # Identity Events
+              - CHITTYID_MINTED
+              - CREDENTIAL_ISSUED
+              - IDENTITY_VERIFIED
+              - CERTIFICATE_ISSUED
+              # Blockchain Events
+              - EVIDENCE_MINTED_TO_CHAIN
+              - TRANSACTION_RECORDED
+              - BLOCK_CREATED
+              # Trust Events
+              - TRUST_SCORE_CALCULATED
+              - VERIFICATION_COMPLETED
+              - CONTRADICTION_DETECTED
+              # System Events
+              - USER_ACTION
+              - SYSTEM_EVENT
+              - API_CALL
+              - SERVICE_INTERACTION
+              - SECURITY_AUDIT
+              - ERROR_LOGGED
+        - name: userId
+          in: query
+          description: Filter by user ChittyID
+          schema:
+            type: string
+            pattern: '^01-[CE]-[A-Z]{3}-[0-9]{4}-[PTOCL]-[0-9]{4}-[0-9]-[0-9A-Z]$'
+        - name: startDate
+          in: query
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: status
+          in: query
+          description: Filter by event status
+          schema:
+            type: string
+            enum: [success, failed, pending, scheduled, in_progress, completed, cancelled]
+        - name: query
+          in: query
+          description: Full-text search query across event descriptions and metadata
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Max results (default 100)
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    post:
+      operationId: logEvent
+      summary: Log new event
+      description: Record a legal, evidence, case, or system event in ChittyChronicle
+      x-openai-isConsequential: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventInput'
+            examples:
+              evidenceCollected:
+                summary: Evidence Collection Event
+                value:
+                  service: ChittyVerify
+                  action: EVIDENCE_COLLECTED
+                  userId: 01-C-PER-0001-P-2411-1-A
+                  metadata:
+                    evidenceId: evt_abc123
+                    evidenceType: Document
+                    custodian: John Doe
+                    location: Court Records Room
+              caseCreated:
+                summary: Case Creation Event
+                value:
+                  service: ChittyCases
+                  action: CASE_CREATED
+                  metadata:
+                    caseId: case_xyz789
+                    caseType: DIVORCE
+                    parties: [person_123, person_456]
+              chittyIdMinted:
+                summary: ChittyID Minted
+                value:
+                  service: ChittyID
+                  action: CHITTYID_MINTED
+                  metadata:
+                    chittyId: 01-C-PER-0001-P-2411-1-A
+                    entityType: PERSON
+      responses:
+        '200':
+          description: Event logged successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  timestamp:
+                    type: string
+                    format: date-time
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /timeline:
+    get:
+      operationId: getTimeline
+      summary: Get activity timeline
+      description: Retrieve event counts grouped by time period for visualization
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: services
+          in: query
+          description: Comma-separated service names
+          schema:
+            type: string
+        - name: groupBy
+          in: query
+          description: Time grouping
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+            default: day
+      responses:
+        '200':
+          description: Timeline data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TimelineEntry'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /audit/{entityId}:
+    get:
+      operationId: getAuditTrail
+      summary: Get audit trail
+      description: Retrieve complete audit trail for an entity (case, evidence, document, identity)
+      parameters:
+        - name: entityId
+          in: path
+          required: true
+          description: Entity ID (ChittyID, case ID, evidence ID, etc.)
+          schema:
+            type: string
+        - name: entityType
+          in: query
+          required: true
+          description: Entity type
+          schema:
+            type: string
+            enum: [case, evidence, document, identity, certificate, contract]
+      responses:
+        '200':
+          description: Audit trail
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /statistics:
+    get:
+      operationId: getStatistics
+      summary: Get statistics
+      description: Retrieve event statistics summary
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Statistics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Statistics'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health:
+    get:
+      operationId: getServiceHealth
+      summary: Get service health
+      description: Retrieve health status for all ChittyOS services
+      responses:
+        '200':
+          description: Service health data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceHealth'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        service:
+          type: string
+          description: ChittyOS service that generated the event
+        action:
+          type: string
+          description: Event action type (legal, evidence, system, or case event)
+        user_id:
+          type: string
+          description: ChittyID of the user who triggered the event
+        user_email:
+          type: string
+        metadata:
+          type: object
+          description: Event-specific data (case IDs, evidence IDs, etc.)
+          additionalProperties: true
+        status:
+          type: string
+          enum: [success, failed, pending, scheduled, in_progress, completed, cancelled]
+        integrations:
+          type: array
+          items:
+            type: string
+          description: Services triggered by this event
+
+    EventInput:
+      type: object
+      required: [service, action]
+      properties:
+        service:
+          type: string
+          description: Service name
+          enum: [ChittyChain, ChittyCases, ChittyVerify, ChittyQuality, ChittyChat, ChittyLedger, ChittyID, ChittyCert, ChittyTrust, ChittyDNA]
+        action:
+          type: string
+          description: Event action type
+        userId:
+          type: string
+          description: ChittyID of the user
+        userEmail:
+          type: string
+        metadata:
+          type: object
+          description: Event-specific context data
+          additionalProperties: true
+        integrations:
+          type: array
+          items:
+            type: string
+          description: Services to trigger
+        status:
+          type: string
+          enum: [success, failed, pending]
+          default: success
+        errorMessage:
+          type: string
+
+    TimelineEntry:
+      type: object
+      properties:
+        period:
+          type: string
+          format: date-time
+        service:
+          type: string
+        event_count:
+          type: integer
+        success_count:
+          type: integer
+        failed_count:
+          type: integer
+
+    Statistics:
+      type: object
+      properties:
+        total_events:
+          type: integer
+        service_count:
+          type: integer
+        user_count:
+          type: integer
+        success_count:
+          type: integer
+        failed_count:
+          type: integer
+
+    ServiceHealth:
+      type: object
+      properties:
+        service:
+          type: string
+        total_events:
+          type: integer
+        failed_count:
+          type: integer
+        error_rate:
+          type: number
+        last_event:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string

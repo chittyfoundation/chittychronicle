@@ -1,0 +1,847 @@
+/**
+ * ChittyChronicle REST API for ChatGPT GPT Actions
+ *
+ * Exposes MCP tools as RESTful endpoints for Custom GPT integration
+ * Deployed to: chronicle.chitty.cc
+ */
+
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { Client } from '@neondatabase/serverless';
+import openApiSpec from '../openapi.json';
+import { enhancedOpenApiYaml } from './openapi-enhanced-content.js';
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+interface ChronicleEvent {
+  service: string;
+  action: string;
+  userId?: string;
+  userEmail?: string;
+  metadata?: Record<string, any>;
+  relatedEvents?: string[];
+  triggeredBy?: string;
+  integrations?: string[];
+  status?: 'success' | 'failed' | 'pending';
+  errorMessage?: string;
+}
+
+interface EventSearchParams {
+  service?: string;
+  action?: string;
+  userId?: string;
+  startDate?: string;
+  endDate?: string;
+  status?: string;
+  limit?: number;
+  query?: string;
+}
+
+// ============================================================================
+// DATABASE SCHEMA
+// ============================================================================
+
+const CHRONICLE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chronicle_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  service VARCHAR(50) NOT NULL,
+  action VARCHAR(100) NOT NULL,
+  user_id VARCHAR(255),
+  user_email VARCHAR(255),
+  metadata JSONB,
+  related_events UUID[],
+  triggered_by VARCHAR(50),
+  integrations TEXT[],
+  status VARCHAR(20) DEFAULT 'success',
+  error_message TEXT,
+  search_vector tsvector GENERATED ALWAYS AS (
+    to_tsvector('english',
+      service || ' ' ||
+      action || ' ' ||
+      COALESCE(metadata::text, '')
+    )
+  ) STORED,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chronicle_service ON chronicle_events(service, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_chronicle_search ON chronicle_events USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS idx_chronicle_timestamp ON chronicle_events(timestamp DESC);
+`;
+
+// ============================================================================
+// CHRONICLE ENGINE
+// ============================================================================
+
+class ChronicleEngine {
+  private db: Client;
+
+  constructor(databaseUrl: string) {
+    this.db = new Client({ connectionString: databaseUrl });
+  }
+
+  async connect(): Promise<void> {
+    await this.db.connect();
+    await this.db.query(CHRONICLE_SCHEMA);
+  }
+
+  async logEvent(event: ChronicleEvent): Promise<{ id: string; timestamp: string }> {
+    const result = await this.db.query(`
+      INSERT INTO chronicle_events (
+        service, action, user_id, user_email, metadata,
+        related_events, triggered_by, integrations, status, error_message
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING id, timestamp
+    `, [
+      event.service,
+      event.action,
+      event.userId || null,
+      event.userEmail || null,
+      event.metadata ? JSON.stringify(event.metadata) : null,
+      event.relatedEvents || null,
+      event.triggeredBy || null,
+      event.integrations || null,
+      event.status || 'success',
+      event.errorMessage || null
+    ]);
+
+    return {
+      id: result.rows[0].id,
+      timestamp: result.rows[0].timestamp
+    };
+  }
+
+  async searchEvents(params: EventSearchParams): Promise<any[]> {
+    let query = 'SELECT * FROM chronicle_events WHERE 1=1';
+    const values: any[] = [];
+    let paramCount = 1;
+
+    if (params.service) {
+      query += ` AND service = $${paramCount++}`;
+      values.push(params.service);
+    }
+
+    if (params.action) {
+      query += ` AND action = $${paramCount++}`;
+      values.push(params.action);
+    }
+
+    if (params.userId) {
+      query += ` AND user_id = $${paramCount++}`;
+      values.push(params.userId);
+    }
+
+    if (params.startDate) {
+      query += ` AND timestamp >= $${paramCount++}`;
+      values.push(params.startDate);
+    }
+
+    if (params.endDate) {
+      query += ` AND timestamp <= $${paramCount++}`;
+      values.push(params.endDate);
+    }
+
+    if (params.status) {
+      query += ` AND status = $${paramCount++}`;
+      values.push(params.status);
+    }
+
+    if (params.query) {
+      query += ` AND search_vector @@ plainto_tsquery('english', $${paramCount++})`;
+      values.push(params.query);
+    }
+
+    query += ` ORDER BY timestamp DESC LIMIT $${paramCount}`;
+    values.push(params.limit || 100);
+
+    const result = await this.db.query(query, values);
+    return result.rows;
+  }
+
+  async getTimeline(params: {
+    startDate: string;
+    endDate: string;
+    services?: string[];
+    groupBy?: 'hour' | 'day' | 'week' | 'month';
+  }): Promise<any[]> {
+    const groupBy = params.groupBy || 'day';
+
+    let query = `
+      SELECT
+        date_trunc('${groupBy}', timestamp) as period,
+        service,
+        COUNT(*) as event_count,
+        COUNT(*) FILTER (WHERE status = 'success') as success_count,
+        COUNT(*) FILTER (WHERE status = 'failed') as failed_count
+      FROM chronicle_events
+      WHERE timestamp BETWEEN $1 AND $2
+    `;
+
+    const values: any[] = [params.startDate, params.endDate];
+
+    if (params.services && params.services.length > 0) {
+      query += ` AND service = ANY($3)`;
+      values.push(params.services);
+    }
+
+    query += ` GROUP BY period, service ORDER BY period DESC`;
+
+    const result = await this.db.query(query, values);
+    return result.rows;
+  }
+
+  async getAuditTrail(entityId: string, entityType: string): Promise<any[]> {
+    const result = await this.db.query(`
+      SELECT * FROM chronicle_events
+      WHERE metadata->>'entityId' = $1
+        AND metadata->>'entityType' = $2
+      ORDER BY timestamp ASC
+    `, [entityId, entityType]);
+
+    return result.rows;
+  }
+
+  async getStatistics(startDate?: string, endDate?: string): Promise<any> {
+    const result = await this.db.query(`
+      SELECT
+        COUNT(*) as total_events,
+        COUNT(DISTINCT service) as service_count,
+        COUNT(DISTINCT user_id) as user_count,
+        COUNT(*) FILTER (WHERE status = 'success') as success_count,
+        COUNT(*) FILTER (WHERE status = 'failed') as failed_count
+      FROM chronicle_events
+      WHERE ($1::timestamptz IS NULL OR timestamp >= $1)
+        AND ($2::timestamptz IS NULL OR timestamp <= $2)
+    `, [startDate || null, endDate || null]);
+
+    return result.rows[0];
+  }
+
+  async getServiceHealth(): Promise<any[]> {
+    const result = await this.db.query(`
+      SELECT
+        service,
+        COUNT(*) as total_events,
+        COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
+        ROUND(
+          COUNT(*) FILTER (WHERE status = 'failed')::numeric /
+          NULLIF(COUNT(*), 0) * 100,
+          2
+        ) as error_rate,
+        MAX(timestamp) as last_event
+      FROM chronicle_events
+      WHERE timestamp >= NOW() - INTERVAL '24 hours'
+      GROUP BY service
+      ORDER BY error_rate DESC NULLS LAST
+    `);
+
+    return result.rows;
+  }
+}
+
+// ============================================================================
+// HONO APP
+// ============================================================================
+
+type Bindings = {
+  NEON_DATABASE_URL: string;
+};
+
+const app = new Hono<{ Bindings: Bindings }>();
+
+// CORS for ChatGPT
+app.use('*', cors({
+  origin: ['https://chat.openai.com', 'https://chatgpt.com'],
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
+
+// Rate limiting helper
+let requestCounts = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimit(ip: string): boolean {
+  const now = Date.now();
+  const limit = requestCounts.get(ip);
+
+  if (!limit || now > limit.resetAt) {
+    requestCounts.set(ip, { count: 1, resetAt: now + 60000 }); // 1 minute window
+    return true;
+  }
+
+  if (limit.count >= 60) { // 60 requests per minute
+    return false;
+  }
+
+  limit.count++;
+  return true;
+}
+
+// ============================================================================
+// ROUTES
+// ============================================================================
+
+// Health check
+app.get('/', (c) => {
+  return c.json({
+    service: 'ChittyChronicle API',
+    version: '1.0.0',
+    status: 'healthy'
+  });
+});
+
+// Serve OpenAPI spec (JSON)
+app.get('/openapi.json', (c) => {
+  return c.json(openApiSpec);
+});
+
+// Serve OpenAPI spec (YAML) - Enhanced with all ChittyOS event types
+app.get('/openapi.yaml', (c) => {
+  return c.text(enhancedOpenApiYaml, 200, {
+    'Content-Type': 'application/yaml',
+  });
+});
+
+// Serve OpenAPI spec (YAML) - Legacy endpoint
+app.get('/openapi-basic.yaml', (c) => {
+  return c.text(`openapi: 3.1.0
+info:
+  title: ChittyChronicle API
+  description: Event logging and audit trail system for ChittyOS ecosystem
+  version: 1.0.0
+  contact:
+    name: ChittyOS Support
+    url: https://chitty.cc
+    email: support@chitty.cc
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://chronicle.chitty.cc
+paths:
+  /events:
+    get:
+      operationId: searchEvents
+      summary: Search logged events
+      description: Retrieve events with optional filters
+      parameters:
+        - name: service
+          in: query
+          description: Filter by service name
+          schema:
+            type: string
+            enum: [ChittyChain, ChittyCases, ChittyVerify, ChittyQuality, ChittyChat, Callidus]
+        - name: action
+          in: query
+          description: Filter by action type
+          schema:
+            type: string
+        - name: userId
+          in: query
+          description: Filter by user ID
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [success, failed, pending]
+        - name: query
+          in: query
+          description: Full-text search query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Max results (default 100)
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: logEvent
+      summary: Log new event
+      description: Record an event in ChittyChronicle
+      x-openai-isConsequential: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventInput'
+      responses:
+        '200':
+          description: Event logged successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  timestamp:
+                    type: string
+                    format: date-time
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /timeline:
+    get:
+      operationId: getTimeline
+      summary: Get activity timeline
+      description: Retrieve event counts grouped by time period
+      parameters:
+        - name: startDate
+          in: query
+          required: true
+          description: Start date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          required: true
+          description: End date (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: services
+          in: query
+          description: Comma-separated service names
+          schema:
+            type: string
+        - name: groupBy
+          in: query
+          description: Time grouping
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+            default: day
+      responses:
+        '200':
+          description: Timeline data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TimelineEntry'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /audit/{entityId}:
+    get:
+      operationId: getAuditTrail
+      summary: Get audit trail
+      description: Retrieve complete audit trail for entity
+      parameters:
+        - name: entityId
+          in: path
+          required: true
+          description: Entity ID (document, case, contract)
+          schema:
+            type: string
+        - name: entityType
+          in: query
+          required: true
+          description: Entity type
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audit trail
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /statistics:
+    get:
+      operationId: getStatistics
+      summary: Get statistics
+      description: Retrieve event statistics summary
+      parameters:
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Statistics summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Statistics'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /health:
+    get:
+      operationId: getServiceHealth
+      summary: Get service health
+      description: Retrieve health status for all services
+      responses:
+        '200':
+          description: Service health data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceHealth'
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        service:
+          type: string
+        action:
+          type: string
+        user_id:
+          type: string
+        user_email:
+          type: string
+        metadata:
+          type: object
+        status:
+          type: string
+          enum: [success, failed, pending]
+        integrations:
+          type: array
+          items:
+            type: string
+    EventInput:
+      type: object
+      required: [service, action]
+      properties:
+        service:
+          type: string
+          description: Service name
+        action:
+          type: string
+          description: Action performed
+        userId:
+          type: string
+        userEmail:
+          type: string
+        metadata:
+          type: object
+          description: Additional context
+        integrations:
+          type: array
+          items:
+            type: string
+          description: Services triggered
+        status:
+          type: string
+          enum: [success, failed, pending]
+          default: success
+        errorMessage:
+          type: string
+    TimelineEntry:
+      type: object
+      properties:
+        period:
+          type: string
+          format: date-time
+        service:
+          type: string
+        event_count:
+          type: integer
+        success_count:
+          type: integer
+        failed_count:
+          type: integer
+    Statistics:
+      type: object
+      properties:
+        total_events:
+          type: integer
+        service_count:
+          type: integer
+        user_count:
+          type: integer
+        success_count:
+          type: integer
+        failed_count:
+          type: integer
+    ServiceHealth:
+      type: object
+      properties:
+        service:
+          type: string
+        total_events:
+          type: integer
+        failed_count:
+          type: integer
+        error_rate:
+          type: number
+        last_event:
+          type: string
+          format: date-time`, 200, {
+    'Content-Type': 'application/yaml',
+  });
+});
+
+// POST /events - Log new event
+app.post('/events', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') || 'unknown';
+
+  if (!rateLimit(ip)) {
+    return c.json({ error: 'Rate limit exceeded' }, 429);
+  }
+
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const body = await c.req.json();
+    const result = await chronicle.logEvent(body as ChronicleEvent);
+
+    return c.json(result);
+  } catch (error: any) {
+    console.error('Error logging event:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// GET /events - Search events
+app.get('/events', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') || 'unknown';
+
+  if (!rateLimit(ip)) {
+    return c.json({ error: 'Rate limit exceeded' }, 429);
+  }
+
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const params: EventSearchParams = {
+      service: c.req.query('service'),
+      action: c.req.query('action'),
+      userId: c.req.query('userId'),
+      startDate: c.req.query('startDate'),
+      endDate: c.req.query('endDate'),
+      status: c.req.query('status'),
+      query: c.req.query('query'),
+      limit: c.req.query('limit') ? parseInt(c.req.query('limit')!) : 100
+    };
+
+    const results = await chronicle.searchEvents(params);
+    return c.json(results);
+  } catch (error: any) {
+    console.error('Error searching events:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// GET /timeline - Timeline data
+app.get('/timeline', async (c) => {
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const startDate = c.req.query('startDate');
+    const endDate = c.req.query('endDate');
+
+    if (!startDate || !endDate) {
+      return c.json({ error: 'startDate and endDate are required' }, 400);
+    }
+
+    const services = c.req.query('services')?.split(',');
+    const groupBy = c.req.query('groupBy') as 'hour' | 'day' | 'week' | 'month' | undefined;
+
+    const timeline = await chronicle.getTimeline({
+      startDate,
+      endDate,
+      services,
+      groupBy
+    });
+
+    return c.json(timeline);
+  } catch (error: any) {
+    console.error('Error getting timeline:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// GET /audit/:entityId - Audit trail
+app.get('/audit/:entityId', async (c) => {
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const entityId = c.req.param('entityId');
+    const entityType = c.req.query('entityType');
+
+    if (!entityType) {
+      return c.json({ error: 'entityType query parameter is required' }, 400);
+    }
+
+    const trail = await chronicle.getAuditTrail(entityId, entityType);
+    return c.json(trail);
+  } catch (error: any) {
+    console.error('Error getting audit trail:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// GET /statistics - Statistics
+app.get('/statistics', async (c) => {
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const startDate = c.req.query('startDate');
+    const endDate = c.req.query('endDate');
+
+    const stats = await chronicle.getStatistics(startDate, endDate);
+    return c.json(stats);
+  } catch (error: any) {
+    console.error('Error getting statistics:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// GET /health - Service health
+app.get('/health', async (c) => {
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const health = await chronicle.getServiceHealth();
+    return c.json(health);
+  } catch (error: any) {
+    console.error('Error getting health:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// BACKWARD COMPATIBILITY ROUTES
+// ChittyConnect calls /api/entries - alias to /events
+// ============================================================================
+
+// POST /api/entries - Alias for /events
+app.post('/api/entries', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') || 'unknown';
+
+  if (!rateLimit(ip)) {
+    return c.json({ error: 'Rate limit exceeded' }, 429);
+  }
+
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const body = await c.req.json();
+    const result = await chronicle.logEvent(body as ChronicleEvent);
+
+    return c.json(result);
+  } catch (error: any) {
+    console.error('Error logging event:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// GET /api/entries - Alias for /events
+app.get('/api/entries', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') || 'unknown';
+
+  if (!rateLimit(ip)) {
+    return c.json({ error: 'Rate limit exceeded' }, 429);
+  }
+
+  try {
+    const chronicle = new ChronicleEngine(c.env.NEON_DATABASE_URL);
+    await chronicle.connect();
+
+    const params: EventSearchParams = {
+      service: c.req.query('service'),
+      action: c.req.query('action'),
+      userId: c.req.query('userId'),
+      startDate: c.req.query('startDate'),
+      endDate: c.req.query('endDate'),
+      status: c.req.query('status'),
+      query: c.req.query('query'),
+      limit: c.req.query('limit') ? parseInt(c.req.query('limit')!) : 100
+    };
+
+    const results = await chronicle.searchEvents(params);
+    return c.json(results);
+  } catch (error: any) {
+    console.error('Error searching events:', error);
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+export default app;
