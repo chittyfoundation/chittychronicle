@@ -1,7 +1,20 @@
+---
+uri: chittycanon://docs/ops/policy/chitty-chronicle-charter
+namespace: chittycanon://docs/ops
+type: policy
+version: 1.0.0
+status: DRAFT
+registered_with: chittycanon://core/services/canon
+title: "ChittyChronicle Charter"
+certifier: chittycanon://core/services/chittycertify
+visibility: PUBLIC
+---
+
 # ChittyChronicle Charter
 
 ## Classification
-- **Tier**: 1 (Foundation)
+- **Canonical URI**: `chittycanon://core/services/chitty-chronicle`
+- **Tier**: 3 (Service Layer)
 - **Organization**: CHITTYFOUNDATION
 - **Domain**: chronicle.chitty.cc
 
@@ -92,3 +105,21 @@ interface ChronicleEvent {
 - **Provider**: Neon PostgreSQL (shared with ChittyLedger)
 - **Project**: shy-sound-75632194 (ChittyFoundation org)
 - **Table**: chronicle_events
+
+## Document Triad
+
+This charter is part of a synchronized documentation triad. Changes to shared fields must propagate.
+
+| Field | Canonical Source | Also In |
+|-------|-----------------|---------|
+| Canonical URI | CHARTER.md (Classification) | CHITTY.md (blockquote) |
+| Tier | CHARTER.md (Classification) | CHITTY.md (blockquote) |
+| Domain | CHARTER.md (Classification) | CHITTY.md (blockquote), CLAUDE.md (header) |
+| Endpoints | CHARTER.md (API Contract) | CHITTY.md (Endpoints table), CLAUDE.md (API section) |
+| Dependencies | CHARTER.md (Dependencies) | CHITTY.md (Dependencies table), CLAUDE.md (Architecture) |
+| Certification badge | CHITTY.md (Certification) | CHARTER.md frontmatter `status` |
+
+**Related docs**: [CHITTY.md](CHITTY.md) (badge/one-pager) | [CLAUDE.md](CLAUDE.md) (developer guide)
+
+---
+*Charter Version: 1.0.0 | Last Updated: 2026-02-23*
