@@ -13,5 +13,7 @@
   ],
   "vars": {
     "ENVIRONMENT": "production"
-  }
+  },
+  "observability": { "enabled": true },
+  "tail_consumers": [{ "service": "chittytrack" }]
 }
